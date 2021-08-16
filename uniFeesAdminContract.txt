@@ -1,0 +1,818 @@
+(***************************************************)
+(*                 Scilla version                  *)
+(***************************************************)
+
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+import ListUtils IntUtils BoolUtils
+library FeesAdminContract 
+
+
+let f =
+  fun (a : ByStr20) =>
+  fun (b : ByStr20) =>
+    builtin eq a b
+    
+
+(*SupplyConstants*)
+let team = Uint32 1
+let companyReserve = Uint32 2
+let liquidityRewards = Uint32 3
+let advisors = Uint32 4
+let preSale = Uint32 5
+let preLaunch = Uint32 6
+let uniStuRewards = Uint32 7
+let liquidityPublicSale = Uint32 8
+let scholarship = Uint32 9
+
+ 
+(* Max Supply  *)
+
+let zero = Uint128 0
+let one1  = Uint128 1
+let one  = Uint32 1
+let nine  = Uint32 9
+let zero0 = Uint32 0
+
+(*To check number is less than zero or greater than nine*)
+let num_check =
+  fun (num : Uint32) =>
+    let num1 = uint32_gt num nine in 
+    let num2 = builtin lt num one in 
+    orb num1 num2
+
+(*To check for uniStuRewards if RemainingLocks is one *)
+let rem_lock_check =
+  fun (uniStuRemLocks : Uint128) =>
+  fun (allLockedToken : Uint128) =>
+  fun (tokenUnlock : Uint128) =>
+    let  is_last_rem_lock  = builtin eq uniStuRemLocks one1 in
+     match is_last_rem_lock with
+       | True => allLockedToken
+       | False => tokenUnlock
+      end
+    
+    
+let blk_leq =
+  fun (blk1 : BNum) =>
+  fun (blk2 : BNum) =>
+    let bc1 = builtin blt blk1 blk2 in 
+    let bc2 = builtin eq blk1 blk2 in 
+    orb bc1 bc2
+    
+let one_msg = 
+  fun (msg : Message) => 
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+    
+(* @dev: User defined ADT for UNIFEES *)
+(* @dev: Tokenvalue - blocknumber- recipient -type*) 
+type FeesLocked = 
+| FeesLocked of Uint128 BNum ByStr20 Uint32    
+   
+(* @dev: User defined ADT for fundRelease *)
+(* @dev:supplyId - recipient - amount - numberOfApproval - comment *)
+type FundReleaseDetails = 
+| FundReleaseDetails of Uint32 ByStr20 Uint128 Uint32 String     
+
+(* @dev: User defined ADT for TokenSupply *)
+(* @dev: TotalTokens - Locked - UnLocked - availableTokens - lockConstant - remainingLocks *) 
+type TokenSupplyDetails = 
+  | TokenSupplyDetails of Uint128 Uint128 Uint128 Uint128 Uint128 Uint128   
+  
+  
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)  
+  
+(* @dev: FeesAdminContract *)
+(* @param owner: Address of contract owner *)
+(* @param minimum_Approver:  Minimum number of approvers needed to release fund*)
+(* @param maximum_supply: Maximum Token supply of FEES ZRC2 token  *)
+contract FeesAdminContract
+  (
+  owner: ByStr20 , 
+  minimum_Approver : Uint32,
+  maximum_supply : Uint128
+  )
+
+(* @dev: Minimum number of approvers *)
+field minApprover : Uint32 =  minimum_Approver
+
+(* @dev: Validation status of InitTokenSupply*)
+field isInitTokenSupplyValidated : Bool = False
+
+(* @dev: check if ZRC2 FEES token address is provided , initially set to false*)
+field isFeesTokenContractAddressProvided : Bool = False
+
+(*@dev: universityStudent(i.e supplyId 7) remainingLocks count , initially set to zero*)
+field uniStudentRemainingLocks : Uint128 = Uint128 0
+
+(* @dev: suppyIdCount , it keeps track of how many suppyIDs are initiiazed*)
+field supplyIdCount : Uint32 = Uint32 0
+
+(* @dev: Total InitTokenSupply , initially set to zero  ,
+after initiliazation it should be equal to maximum supply*)
+field totalInitTokenSupply : Uint128 = Uint128 0
+
+(* @dev: List of approvers for specific fundRelease ID *)
+field approversOfReleaseFund : Map Uint32 List(ByStr20)              
+                = Emp Uint32 List(ByStr20)
+
+(* @dev: List of all approvers*)              
+field approvers : List(ByStr20)  = let c = Nil {ByStr20}  in  
+                                  Cons{ByStr20} owner c           
+
+(* @dev: Initial fundRelease ID*)
+field fundReleaseID  : Uint32 = Uint32 1                     
+
+(* @dev: FundReleaseID mapped with FundReleaseDetails ADT*)
+(* @dev: fundReleaseID -> supplyId - recipient - amount - numberOfApproval- comment *)
+field releaseFund : Map Uint32 FundReleaseDetails 
+                   = Emp Uint32 FundReleaseDetails      
+                
+(* @dev: TokenSupplyID mapped with TokenSupplyDetails ADT*)
+(* @dev: supplyId -> TotalTokens - Locked - UnLocked - availableTokens - lockConstant - remainingLocks *) 
+field tokenSupply : Map Uint32 TokenSupplyDetails 
+                   = Emp Uint32 TokenSupplyDetails                       
+
+(* @dev: FEES token Address , initiliazing it with dummy address*)
+field tokenAddress : ByStr20 = 0x1234567890123456789012345678901234567890
+
+
+(* @dev: Initial Token timelock index*)
+field lockIndex : Uint128 = Uint128 1 
+
+(* @dev: Token timelock index mapped with FeesLocked ADT*)
+(* @dev: TimelockIndex -> Tokenvalue - blocknumber- recipient -type*)
+field lockedToken : Map Uint128 FeesLocked = Emp  Uint128 FeesLocked   
+
+
+
+(**************************************)
+(*             Procedures             *)
+(**************************************)
+
+(* @dev: To check _sender is owner *)
+procedure IsOwner()
+  is_owner = builtin eq owner _sender;
+  match is_owner with
+  |True => 
+  |False =>
+    err = { _exception : "NotOwner" ; details : "Only Contract Owner can invoke"};
+    throw err
+    end
+end
+
+(* @dev: To check _sender is approver *)
+procedure IsApprover()
+  approversList <- approvers ;
+  list_mem_int32 = @list_mem ByStr20;
+  is_approver = list_mem_int32 f _sender approversList;
+  match is_approver with 
+  |True =>
+  |False =>
+    err = { _exception : "NotApprover" ; message : "Only approver can invoke"};
+    throw err
+  end
+end
+
+(* @dev: To check if initTokenSupply is validated by contract owner *)
+procedure IsInitTokenSupplyValidated()
+  getIsInitTokenSupplyValidated <- isInitTokenSupplyValidated ;
+  match getIsInitTokenSupplyValidated with
+  |True =>
+  |False =>
+    err = { _exception : "NotInitTokenSupplyValidated" ;
+    message : "InitTokenSupply needs to be vaidated first using transition ValidateInitTokenSupply "};
+    throw err
+  end
+end
+
+(* @dev: To check if contract owner has added non zero TotalTokens in InitTokenSupply transition*)
+procedure IsTotalTokensValid(totalTokens : Uint128)
+  is_totalTokensZero = builtin eq totalTokens zero;
+  match is_totalTokensZero with 
+  |False =>
+  |True =>
+    err = { _exception : "InvaidEntry" ; message : "TotalTokens should not be equal to ZERO"};
+    throw err
+end
+end
+
+(* @dev: To check if FEES ZRC2 token contract address is provided by contract owner or not *)
+procedure IsFeesTokenAddressProvided()
+  isContractAddressExists <- isFeesTokenContractAddressProvided ;
+  match isContractAddressExists with 
+    |True  =>
+    |False =>
+      err = { _exception : "FEESTokenAddressEmpty" ; 
+      message : "FEES Token contract address must be entered by contract owner using transition AddFeesTokenAddress"};
+      throw err
+    end
+end
+
+(* @dev: To update totalInitTokenSupply mutable variable whenever contract owner calls transition InitTokenSupply *)
+(* @param supplyId: Type of request i.e 1 for team , 2 for companyReserve , 3 for liquidityRewards etc            *)
+(* @param is_supplyID_exists: Boolean value True if supplyId already exists                                       *)
+(* @param totalTokens: Total number of tokens                                                                     *)
+procedure UpdateTotalInitTokenSupply(supplyId : Uint32 , is_supplyID_exists : Bool , totalTokens : Uint128) 
+
+getTotalInitTokenSupply  <- totalInitTokenSupply;
+match is_supplyID_exists with 
+  |True =>
+    tokenSupplyDetails <- tokenSupply[supplyId] ;
+    match tokenSupplyDetails with 
+    |Some val =>
+    match val with
+    |TokenSupplyDetails totalToken locked unLocked availableTokens lockConstant remainingLocks  =>
+      (*  To delete previously added totalToken and update with new totalToken in totalInitTokenSupply variable *)
+       updatedTotalInitTokenSupply  = builtin sub getTotalInitTokenSupply totalToken ;
+       updatedTotalInitTokenSupply1  = builtin add  updatedTotalInitTokenSupply totalTokens;
+       totalInitTokenSupply        := updatedTotalInitTokenSupply1
+    end
+    |None =>
+    end
+  |False =>
+    updatedTotalInitTokenSupply  = builtin add  getTotalInitTokenSupply totalTokens;
+    totalInitTokenSupply        := updatedTotalInitTokenSupply;
+   (* increasing supplyIdCount mutable variable by one   *)
+    getsupplyIdCount  <- supplyIdCount;
+    updatedSupplyIdCount =  builtin add getsupplyIdCount one;
+    supplyIdCount := updatedSupplyIdCount
+  end
+end
+
+(* @dev: Procedure to check entries of lockConstant and remainingLocks are correct                  *)
+(* @dev: called from transition InitTokenSupply                                                     *)
+(* @param supplyId: Type of request i.e 1 for team 2 for companyReserve etc                         *)
+(* @param locked: Initial Locked tokens                                                             *)
+(* @param lockConstant: Constant tokens that need to be time Locked                                 *)
+(* @param remainingLocks: Number of remaining time locks                                            *)
+procedure CheckLockedValidation(
+supplyId : Uint32 ,
+locked : Uint128 , 
+lockConstant: Uint128 , 
+remainingLocks : Uint128)
+
+ checkSupplyID = builtin eq supplyId uniStuRewards ;
+ match checkSupplyID with 
+   |False =>
+     calcuatedLockedSupply = builtin mul lockConstant remainingLocks;
+     checkLockedSupply = builtin eq calcuatedLockedSupply locked ;
+     match checkLockedSupply with
+       |True =>
+       |False =>
+         err = { _exception : "InvalidEntry" ; details : "Multiplication of lockConstant and remainingLocks does not match with lockedTokens"};
+         throw err
+       end
+   |True =>
+    (* Updating uniStudentRemainingLocks mutable field value    *)
+    uniStudentRemainingLocks := remainingLocks
+ end
+
+end
+
+(* @dev: Procedure to update token supply , called from transition UnLockFeesToken                     *)
+(* @param supplyId: Type of request i.e 1 for team , 2 for companyReserve , 3 for liquidityRewards etc *)
+(* @param tokenUnlock:  Number of tokens that are going to unlocked                                    *)
+(* @param recipient1:  recipient address ,in this case it will admin Contract                          *)
+(* @param lockTokenIndex: Index number by which tokens are locked                                      *)
+(* @param is_type_student: To check if supplyId is 7 i.e uniStuReward or not                           *)
+procedure UpdateUnlockedTokenSupply
+(
+supplyId : Uint32 ,
+tokenUnlock: Uint128 ,
+recipient1: ByStr20 , 
+lockTokenIndex : Uint128,
+is_type_student : Bool
+)
+
+tokenSupplyDetails <- tokenSupply[supplyId] ;
+match tokenSupplyDetails with 
+ |Some val =>
+   match val with
+    |TokenSupplyDetails totalTokens locked unLocked availableTokens lockConstant remainingLocks  =>
+
+    (* @dev: To check if requested unlock amount is lessthan or equal to locked supply*)
+      is_amount_valid    = uint128_le tokenUnlock locked ;
+        match is_amount_valid with 
+          |True =>
+             
+            (* To check if supplyId is 7 i.e uniStuReward or not *)
+            match is_type_student with
+              |True =>
+                (* Get value of uniStudentRemainingLocks if its value is one then unlock all the locked tokens for supplyId 7 as 
+                 this is the last lock after that locked tokens cannot be unlocked for supplyId 7 *)
+                 
+                getUniStudentRemainingLocks <- uniStudentRemainingLocks ;
+                tokenUnlock1 = rem_lock_check getUniStudentRemainingLocks locked tokenUnlock ;
+                
+                (* Decreasing uniStudentRemainingLocks by one *)
+                updatedUniStudentRemainingLocks = builtin sub getUniStudentRemainingLocks one1;
+                uniStudentRemainingLocks   := updatedUniStudentRemainingLocks;
+                (* @dev: Mint FEES token*)
+                feesToekenAddr <- tokenAddress ;
+                msg1 = { _tag : "Mint"; _recipient : feesToekenAddr ; _amount : Uint128 0; recipient : recipient1 ; amount : tokenUnlock1};
+                msgs = one_msg msg1;
+                send msgs
+              |False=>
+                (* @dev: Mint FEES token*)
+                feesToekenAddr <- tokenAddress ;
+                msg1 = { _tag : "Mint"; _recipient : feesToekenAddr ; _amount : Uint128 0; recipient : recipient1 ; amount : tokenUnlock};
+                msgs = one_msg msg1;
+                send msgs
+              end;
+
+            (* @dev:  Update locked and unlocked tokens*)
+            updatedLocked = builtin sub locked tokenUnlock ;
+            updatedUnLocked = builtin add unLocked tokenUnlock ;
+            updatedavailableTokens = builtin add availableTokens tokenUnlock ;
+
+            (* @dev: Updating tokenSupply   *)
+            tokenSupplyDet =  TokenSupplyDetails totalTokens updatedLocked  updatedUnLocked updatedavailableTokens lockConstant remainingLocks;
+            tokenSupply[supplyId] := tokenSupplyDet ;
+
+            e = {_eventname : "TokenUnlockSuccess" ; lockType: supplyId ; lockedValue : updatedLocked ; unlockedValue: updatedUnLocked ; available: updatedavailableTokens};
+            event e  ;
+
+            (* @dev: Delete entry for lockTokenIndex as tokens are unlocked              *)
+            delete lockedToken[lockTokenIndex]
+          |False =>
+            err = { _exception : "InvaidAmount" ; message : "unlocked amount is higher than locked amount"};
+            throw err
+        end  
+   end
+  |None =>
+     err = { _exception : "InvalidRequestType" ; message : "Invalid supplyId"};
+     throw err
+  end
+end
+
+(* @dev: To timeLock token supply ,invoked from transition LockFeesToken                            *)
+(* @param timelockSupply: Pair consisting of a releaseBlock of type BNum and supplyId of type Uint32*) 
+(* releaseBlock: Block number until tokens need to be locked                                        *)
+(* supplyId:  type of request i.e 1 for team 2 for companyReserve etc                               *)
+procedure TimelockTokenSupply(timelockSupply : Pair(BNum)(Uint32))        
+  match timelockSupply with
+  | Pair releaseBlock supplyId =>
+    (* @dev: To check whether supplyId exist or not  *)
+    reqTyp <- tokenSupply[supplyId] ;
+    match reqTyp with
+    |Some val =>
+      match val with
+        |TokenSupplyDetails totalTokens locked unLocked availableTokens lockConstant remainingLocks =>
+          is_remainingLocks_valid    = uint128_neq remainingLocks zero ;
+          match is_remainingLocks_valid with 
+            |True =>
+              (* @dev: To check if supplyId is student/University rewards   *)
+              is_type_student =  builtin eq supplyId uniStuRewards ;
+              match is_type_student with
+                |True =>
+                  currIndex <- lockIndex ;
+                  lockedValue = FeesLocked zero releaseBlock _this_address supplyId ;
+                  lockedToken[currIndex] := lockedValue ;
+                  newIndex = builtin add currIndex one1 ;
+                  lockIndex := newIndex ;
+                
+                  g = {_eventname : "TokenLocked";lockTokenIndex: currIndex ; lockedValue : lockConstant; uptoBlock: releaseBlock  ; lockType: supplyId};
+                  event g
+                
+                |False =>
+                  currIndex <- lockIndex ;
+                  lockedValue = FeesLocked lockConstant releaseBlock _this_address supplyId ;
+                  lockedToken[currIndex] := lockedValue ;
+                  newIndex = builtin add currIndex one1 ;
+                  lockIndex := newIndex ;
+      
+                  g = {_eventname : "TokenLocked"; lockTokenIndex: currIndex ; lockedValue : lockConstant; uptoBlock: releaseBlock  ; lockType: supplyId};
+                  event g
+              end;
+                (*  @dev:  Decreasing value of remainingLocks by one  *)
+                updated_remainingLocks = builtin sub remainingLocks one1 ;
+                updated_TokenSupplyDetails2 = TokenSupplyDetails totalTokens locked unLocked availableTokens lockConstant updated_remainingLocks ;
+                tokenSupply[supplyId]  := updated_TokenSupplyDetails2 
+                      
+                      
+            |False =>
+              err = { _exception : "TokenLockComplete" ; message : "No more Token avaiable to lock"};
+              throw err
+              end  
+      end
+    |None =>
+      err = { _exception : "InvalidRequestType" ; message : "Invalid supplyId"};
+      throw err
+      end
+      
+      end
+end
+(**)
+(**)
+
+(***************************************)
+(*             Transitions             *)
+(***************************************)
+
+
+(* @dev: To add FEES ZRC2 token address . Only contract_owner allowed to invoke. *)
+(* @param tokenAdr: Address of FEES ZRC2 token                                   *)                                                              
+transition AddFeesTokenAddress(feestokenAddress : ByStr20)
+    IsOwner ;
+    tokenAddress := feestokenAddress ;
+    true = True ;
+    isFeesTokenContractAddressProvided := true ;
+    x = {_eventname : "Fees token address added" ;tokenAddress :feestokenAddress};
+    event x
+end
+
+(* @dev: Transition to add initial token supply as per token economics of project                   *)
+(* @dev: To add initial token supply details .Only contract_owner allowed to invoke.                *)
+(* @param supplyId: Type of request i.e 1 for team 2 for companyReserve etc                         *)
+(* @param totalTokens: Total number of locked and unlocked tokens for perticular supplyId           *)
+(* @param locked: Initial Locked tokens                                                             *)
+(* @param unlocked: Initial UnLocked tokens                                                         *)
+(* @param lockConstant: Constant tokens that need to be time Locked                                 *)
+(* @param remainingLocks: Number of remaining time locks                                            *)
+transition InitTokenSupply(
+supplyId : Uint32 ,
+totalTokens : Uint128 ,
+locked : Uint128 , 
+unlocked: Uint128 , 
+lockConstant: Uint128 , 
+remainingLocks : Uint128) 
+  
+
+  IsOwner ;
+  (* @dev: To check if supply id is valid is not less than zero or greater than 9 , it should be between 1 to 9 *)
+  check_supplyId = num_check supplyId ;
+  match check_supplyId with
+   |False =>
+    (* @dev: To check if supply id is already initiliazed *)
+    is_supplyID_exists <- exists tokenSupply[supplyId] ;
+    (* To check if isInitTokenSupplyValidated variable is already validated*)
+    is_InitTokenSupplyValidated <- isInitTokenSupplyValidated  ;
+    is_tokenSupplyValidated = andb is_supplyID_exists is_InitTokenSupplyValidated;
+    match is_tokenSupplyValidated with
+     |False =>
+       availabeTokens = unlocked ;
+       (* To check if addition of locked and unlocked is equal to totaltokens*)
+       totalTokensCheck = builtin add locked unlocked ;
+       compare_totalTokens = builtin eq totalTokens totalTokensCheck ;
+       
+       (*To check if total tokens is non zero *)
+       IsTotalTokensValid totalTokens ;
+       CheckLockedValidation supplyId locked lockConstant remainingLocks ;
+       match compare_totalTokens with
+        |True =>
+         UpdateTotalInitTokenSupply supplyId is_supplyID_exists totalTokens ;
+         tokenSupplyDetails =  TokenSupplyDetails totalTokens locked unlocked availabeTokens lockConstant remainingLocks ;
+         tokenSupply[supplyId] := tokenSupplyDetails    ;
+         m = {_eventname : "InitTokenSupplyAdded" ; suppyID: supplyId};
+         event m
+        |False =>
+         err = { _exception : "InvalidEntry" ; details : "Addition of locked and unlocked does not match with totalTokens"};
+         throw err
+       end
+     |True =>
+      err = { _exception : "SupplyIDExistsAndValidated" ; details : "TokenSupply is already initiliazed for SupplyID and Validated successfully "};
+      throw err
+    end
+   |True =>
+    err = { _exception : "InvalidRequestType" ; message : "Invalid supplyId"};
+    throw err
+  end
+
+end
+
+(* @dev: To validate that contract owner has correctly initialised token supply as per token economics of project  *)
+transition ValidateInitTokenSupply()
+   IsOwner;
+   IsFeesTokenAddressProvided;
+   (* To check whether all supplyId is initialized or not i.e supplyIs should be nine  *)
+   getsupplyIdCount  <- supplyIdCount;
+   is_allSupplyIdInitialized = builtin eq getsupplyIdCount nine ;
+  (*To compare if total token supply is equal to max supply   *)
+   getTotalInitTokenSupply  <- totalInitTokenSupply;
+   compareTotalTokenSupply = builtin eq getTotalInitTokenSupply maximum_supply;
+   validationCheck         = andb is_allSupplyIdInitialized compareTotalTokenSupply;
+   match validationCheck with
+     |True =>
+       true = True ;
+       isInitTokenSupplyValidated := true;
+       m = {_eventname : "ValidationSuccessfull" ; info: "InitTokensupply is validated successfully!!"};
+       event m
+     |False =>
+       err = { 
+         _exception : "ValidationFailed" ;
+         details :"Validation failed because of any one reason from reason1 or reason2" ;
+         reason1 : "TotalInitTokenSupply must be equal to Maximum supply" ;
+         totalTokenSupply:getTotalInitTokenSupply ;
+         maxSupply:maximum_supply;
+         reason2 : "Not all supplyId are initiliazed";
+         supplyID:getsupplyIdCount
+         };
+      throw err
+   end
+   
+end
+
+(* @dev: To add address of approver . Only contract_owner allowed to add approver   *)
+(* @param approverAddr: Address of the approver                                     *)                                                             
+transition AddApprover(approverAddr : ByStr20)
+
+  IsOwner;
+  approversList <- approvers;
+  (* @dev: To check if approver is already added in approver list or not  *)
+  list_mem_int32 = @list_mem ByStr20;
+  is_already_approver = list_mem_int32 f approverAddr approversList; 
+  match is_already_approver with
+   |False =>
+    updated_approverList =  Cons {ByStr20} approverAddr approversList;
+    approvers :=  updated_approverList  ;
+    e = {_eventname : "ApproverAdded" ; details: "Approver added successfully"};
+    event e
+   |True =>
+    err = { _exception : "AlreadyAdded" ; details : "Approver already added"};
+    throw err
+    end
+end
+
+
+(* @dev: Fund release request only approver are allowed to call                *)
+(* @param supplyId: Type of request i.e 1 for team , 2 for companyReserve etc  *)
+(* @param recipient: Address of the receiver                                   *)
+(* @param amount   : Amount to be released                                     *)
+(* @param comment  : Comment about the reason to transfer                      *)           
+transition FundReleaseRequest(supplyId : Uint32 ,recipient : ByStr20 , amount : Uint128 ,comment : String)
+
+(* @dev: To check _sender is approver *)
+ IsApprover ;
+(* @dev: To check if InitTokenSupply is validated by contract owner ,without validation other transitions cannot be used *)
+ IsInitTokenSupplyValidated ;
+ (* @dev: To check whether supplyId exist or not  *)
+ reqTyp <- tokenSupply[supplyId] ;
+match reqTyp with
+ |Some val =>
+   match val with
+    |TokenSupplyDetails totalTokens locked unLocked availableTokens lockConstant remainingLocks =>
+      (* @dev: To check if requested release amount is lessthan or equal to unlock supply*)
+      is_amount_valid    = uint128_le amount availableTokens ;
+      match is_amount_valid with 
+       |True =>
+          id  <- fundReleaseID ;
+          a = Nil {ByStr20} ;  
+          f = Cons {ByStr20} _sender a;      
+          approversOfReleaseFund[id]  := f           ;     
+          updated_fundReleaseID  = builtin add id one;
+          fundReleaseID := updated_fundReleaseID;  
+          fundReleaseDetais = FundReleaseDetails supplyId recipient amount one comment;
+          releaseFund[id] :=  fundReleaseDetais;
+          e = {_eventname : "Success" ; details: "Fund release request successful" ;fundreleaseId : id};
+          event e
+       |False =>
+          err = { _exception : "InvaidReleaseAmount" ; message : "Requested amount is higher than avaiabe amount"};
+          throw err
+      end  
+    end
+  |None =>
+   err = { _exception : "InvalidRequestType" ; message : "Invalid supplyId"};
+   throw err
+   end
+end
+
+
+(* @dev: To approve the Fund release request only approver can call this               *)
+(* @param fundReleaseId:  unique fundReleaseId that generated after raising FundReleaseRequest       *)
+transition ApproveFund(fundReleaseId : Uint32 )
+
+    IsApprover ;
+    (* @dev: To check if InitTokenSupply is validated by contract owner ,without validation other transitions cannot be used *)
+    IsInitTokenSupplyValidated ;
+    b <- approversOfReleaseFund[fundReleaseId] ; 
+    match b with 
+    |Some adr =>
+      (* @dev: to check if approver is already approved fundReleaseId  *)
+      list_mem_int32a = @list_mem ByStr20;
+      is_already_approved = list_mem_int32a f _sender adr;
+      match is_already_approved with
+      |False=>
+        f = Cons {ByStr20} _sender adr;      
+        approversOfReleaseFund[fundReleaseId]  := f  ;
+        (*  @dev: To get the count of approvers for particular fundReleaseID *)
+        count = @list_length ByStr20 ;
+        approverCount =  count  adr;
+        updatedApproverCount = builtin add  approverCount one;   (*Increase approver count by one*)
+        (* @dev: To update releaseFund with new approval count  *)
+        get_fund_details <- releaseFund[fundReleaseId];
+        match get_fund_details with 
+          |Some val => 
+            match val with 
+              |FundReleaseDetails supplyId recipient amount numberOfApproval comment =>
+                fundReleaseDetais = FundReleaseDetails supplyId recipient amount updatedApproverCount comment;
+                releaseFund[fundReleaseId] :=  fundReleaseDetais;
+                e = {_eventname : "ApprovedSuccessful" ; details: "sender approved the fundReleaseId successfully"};
+                event e
+            end
+          |None =>
+            err = { _exception : "AlreadyReleased" ; details : "Fund already released "};
+            throw err
+            end
+      |True =>
+        err = { _exception : "AlreadyApproved" ; details : "Sender has already approved for this fundReleaseId"};
+        throw err
+        end
+   |None =>
+    err = { _exception : "InvalidRequestType" ; message : "Invalid fundReleaseId"};
+    throw err
+     end
+
+end
+
+
+(* @dev: To withdraw the Fund and transfer tokens to recipient only approver can call this  *)
+(* @param fundReleaseId:  unique fundReleaseId that generated after raising FundReleaseRequest            *)
+transition WithdrawFund(fundReleaseId : Uint32)
+
+  IsApprover ;
+  IsInitTokenSupplyValidated ;
+  get_fund_details <- releaseFund[fundReleaseId];
+  match get_fund_details with 
+    |Some val => 
+      match val with 
+      |FundReleaseDetails supplyId recipient amount numberOfApproval comment =>
+      minimum_approver <- minApprover ;
+      isApproved =  uint32_le minimum_approver numberOfApproval ;
+      match isApproved with 
+       |True =>
+
+       (* @dev: To check if withdrawal amount is lessthan or equal to availableTokens amount           *)
+        reqTyp <- tokenSupply[supplyId] ;
+        match reqTyp with
+          | Some val =>
+            match val with
+              |TokenSupplyDetails totalTokens locked unLocked availableTokens lockConstant remainingLocks =>
+              (* @dev: To check if requested release amount is lessthan or equal to unlock supply*)
+              is_amount_valid    = uint128_le amount availableTokens ;
+              match is_amount_valid with 
+                |True =>
+                (*Transfer fees token*)
+                  feesToekenAddr <- tokenAddress ;
+                  msg1 = { _tag : "Transfer"; _recipient : feesToekenAddr ; _amount : Uint128 0; to : recipient ; amount : amount};
+                  msgs = one_msg msg1;
+                  send msgs;
+                  (* @dev: Updating availableTokens after withdrawfund *)
+                  updated_availableTokens = builtin sub availableTokens amount ;
+                  updated_tokenSupplyDetails = TokenSupplyDetails totalTokens locked unLocked updated_availableTokens lockConstant remainingLocks;
+                  tokenSupply[supplyId] := updated_tokenSupplyDetails ;
+                  e = {_eventname : "FundsTransferredSuccessful" ;tokenAmount : amount ; tokenReceiver: recipient };
+                  event e;
+                  delete releaseFund[fundReleaseId]
+                |False =>
+                  err = { _exception : "InvaidReleaseAmount" ; message : "Requested amount is higher than available amount"};
+                  throw err
+              end  
+            end
+        | None =>
+              err = { _exception : "InvalidRequestType" ; message : "Invalid supplyId"};
+              throw err
+        end
+                                                
+      |False =>
+        err = { _exception : "InsufficientApproval" ; message : "total approval for fund release is less than minimum required approval"};
+        throw err
+        end                     
+      end
+  |None =>
+    err = { _exception : "InvalidRequestType" ; message : "Invalid fundReleaseId or fundReleaseId is already withdrawn"};
+    throw err
+    end
+end
+
+
+(* @dev: To timeLock token supply ,invoked only by contract owner                      *)
+(* @dev: Contract owner input the data in JSON format                                  *)
+(* @param :List of Pair consisting of a value of type BNum and a value of type Uint32  *)
+
+transition LockFeesToken(timeLockDetailsList : List( Pair(BNum)(Uint32)))               
+    IsOwner ;
+    IsInitTokenSupplyValidated ;
+    (*For all elements in timeLockDetailsList List invoke procedure TimelockTokenSupply  *)
+    forall timeLockDetailsList TimelockTokenSupply
+   
+end
+
+(* @dev: To unlock timeLock tokens by only owner  *)
+(* @param  lockTokenIndex: Index number by which tokens are locked *)
+(* @param  tokenUnlock:  Amount of tokens to be unlocked only for student rewards else it shoud be zero *)
+
+transition UnLockFeesToken(lockTokenIndex : Uint128 , tokenUnlock : Uint128)
+
+  IsOwner ;
+  IsInitTokenSupplyValidated ;
+  blk <- & BLOCKNUMBER;
+  get_locked_value <- lockedToken[lockTokenIndex] ;
+  match get_locked_value with
+    |Some val => 
+      match val with 
+       |FeesLocked lockConstant blockNum recipient supplyId =>
+       is_lockend = blk_leq blockNum blk;
+        match  is_lockend with 
+          |True  => 
+           (* @dev: To check if supplyId is student rewards   *)
+            is_type_student =  builtin eq supplyId uniStuRewards ;
+            match is_type_student with
+             |True =>
+
+              (* @dev: Calling procedure UpdateUnlockedTokenSupply  *)
+              UpdateUnlockedTokenSupply supplyId tokenUnlock recipient lockTokenIndex is_type_student
+             
+              | False =>
+              
+              (* @dev: Calling procedure updeUnlockedTokenSupply  *)
+              UpdateUnlockedTokenSupply supplyId lockConstant recipient lockTokenIndex is_type_student
+            end
+                   
+          |False =>
+
+           err = { _exception : "LockingPeriodNotEnd" ; message : "locking Period yet to end" ; currentBlock: blk ; unlockBlock: blockNum};
+           throw err
+        end
+      end 
+    |None =>
+      err = { _exception : "InvalidLockIndex" ; message : "Invalid lockIndex or lock already released"};
+      throw err
+  end
+
+end
+
+(* @dev: To get the list of approvers  *)
+transition GetApproverList()
+
+ approversList <- approvers;
+ g = {_eventname : "Approverslist" ; listOfApprovers: approversList};
+ event g
+                
+end
+
+
+
+(* @dev: To Burn Fees token ,only contract owner can call      *)
+(* @dev: Token burn from contract owner address                *)
+(* @param  burn_amount: Amount of tokens that needs to be burn *)
+transition BurnFeesToken(burn_amount :Uint128)
+
+   IsOwner ;
+   IsInitTokenSupplyValidated ;
+   (* @dev: Burn FEES token*)
+    feesToekenAddr <- tokenAddress ;
+    msg1 = { _tag : "Burn"; _recipient : feesToekenAddr ; _amount : Uint128 0; burn_account: _sender ; amount: burn_amount};
+    msgs = one_msg msg1;
+    send msgs
+
+end
+
+
+(*Below Four are callback transition to accept ZRC2 tockens in contract*)
+ transition RecipientAcceptTransfer(
+  
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+transition TransferSuccessCallBack(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+transition RecipientAcceptMint(
+  minter : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+   
+end
+
+transition MintSuccessCallBack(
+minter : ByStr20,
+recipient : ByStr20,
+amount : Uint128
+)
+      
+end
+   
+transition BurnSuccessCallBack(
+burner: ByStr20 ,
+burn_account: ByStr20 ,
+amount : Uint128
+)
+   
+end
